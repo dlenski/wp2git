@@ -51,15 +51,15 @@ def main():
 
     # Connect to site with mwclient
     if args.site is not None:
-        scheme, host, path = urlparse.urlparse(args.site, scheme='http')[:3]
+        scheme, host, path = urlparse.urlparse(args.site, scheme='https')[:3]
         if path=='':
             path = '/w/'
         elif not path.endswith('/'):
             path += '/'
     elif args.lang is not None:
-        scheme, host, path = 'http', '%s.wikipedia.org' % args.lang, '/w/'
+        scheme, host, path = 'https', '%s.wikipedia.org' % args.lang, '/w/'
     else:
-        scheme, host, path = 'http', 'wikipedia.org', '/w/'
+        scheme, host, path = 'https', 'wikipedia.org', '/w/'
     site = mwclient.Site((scheme, host), path=path)
     print('Connected to %s://%s%s' % (scheme, host, path), file=stderr)
 
