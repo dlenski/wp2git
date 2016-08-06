@@ -74,17 +74,16 @@ def main():
     if args.doimport:
         # Create output directory and pipe to git
         if args.out is not None:
-            path = args.out
+            out = args.out
         else:
-            path = fn
+            out = fn
 
-        if os.path.exists(path):
-            p.error('path %s exists' % path)
+        if os.path.exists(out):
+            p.error('path %s exists' % out)
         else:
-            os.mkdir(path)
-            os.chdir(path)
-            sp.check_call(['git','init'] + (['--bare'] if args.bare else []))
-            pipe = sp.Popen(['git', 'fast-import','--quiet','--done'], stdin=sp.PIPE)
+            os.mkdir(out)
+            sp.check_call(['git','init'] + (['--bare'] if args.bare else []), cwd=out)
+            pipe = sp.Popen(['git', 'fast-import','--quiet','--done'], stdin=sp.PIPE, cwd=out)
             fid = pipe.stdin
     else:
         fid = args.out
@@ -125,7 +124,7 @@ def main():
     if args.doimport:
         pipe.communicate()
         if not args.bare:
-            sp.check_call(['git','checkout'])
+            sp.check_call(['git','checkout'], cwd=out)
 
 if __name__=='__main__':
     main()

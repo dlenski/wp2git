@@ -6,7 +6,7 @@ This program allows you to download and convert any Wikipedia article's history 
 ### Quick installation
 
 ```
-pip install https://github.com/dlenski/wp2git/archive/v1.0.zip
+pip install https://github.com/dlenski/wp2git/archive/v1.0.1.zip
 ```
 
 ### Usage
