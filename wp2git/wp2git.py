@@ -7,6 +7,7 @@ import mwclient
 import subprocess as sp
 import urlparse
 import os, locale, time
+from .version import __version__
 
 lang = locale.getdefaultlocale()[0].split('_')[0] or ''
 
@@ -18,6 +19,7 @@ def sanitize(s):
 
 def parse_args():
     p = argparse.ArgumentParser(description='Create a git repository with the history of the specified Wikipedia article.')
+    p.add_argument('--version', action='version', version=__version__)
     p.add_argument('article_name')
     g2 = p.add_argument_group('Output options')
     g=g2.add_mutually_exclusive_group()
