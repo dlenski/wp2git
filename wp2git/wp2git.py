@@ -30,7 +30,7 @@ def parse_args():
     g2 = p.add_argument_group('MediaWiki site selection')
     g=g2.add_mutually_exclusive_group()
     g.add_argument('--lang', default=lang, help='Wikipedia language code (default %(default)s)')
-    g.add_argument('--site', help='Alternate MediaWiki site (e.g. http://commons.wikimedia.org[/w/])')
+    g.add_argument('--site', help='Alternate MediaWiki site (e.g. https://commons.wikimedia.org[/w/])')
 
     args = p.parse_args()
     if not args.doimport:

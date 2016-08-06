@@ -20,9 +20,9 @@ Run `wp2git --help` for more options.
 
 ### Requirements
 
-`git` should be accessible from `PATH`. The [`mwclient` package](http://github.com/mwclient/mwclient)
+`git` should be accessible from `PATH`. The [`mwclient` package](https://github.com/mwclient/mwclient)
 is required.
 
 ### Entirely based on
 
-[CyberShadow's version](http://github.com/CyberShadow/wp2git) written in the D language.
+[CyberShadow's version](https://github.com/CyberShadow/wp2git) written in the D language.
