@@ -68,7 +68,7 @@ def main():
     # Find the page
     page = site.pages[args.article_name]
     if not page.exists:
-        p.error('Page %s does not exist' % s)
+        p.error('Page %s does not exist' % args.article_name)
     fn = sanitize(args.article_name)
 
     if args.doimport:
