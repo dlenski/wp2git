@@ -100,7 +100,7 @@ def main():
             tags = (['minor'] if 'minor' in rev else []) + [tag.encode('utf8') for tag in rev['tags']]
             ts = time.mktime(rev['timestamp'])
 
-            if rev['userid']:
+            if rev.get('userid'):
                 committer = '%s <%s@%s>' % (user,user_,host)
             else:
                 committer = '%s <>' % user
