@@ -9,6 +9,7 @@ import urlparse
 import os, locale, time
 from .version import __version__
 
+locale_encoding = locale.getpreferredencoding()
 lang = locale.getdefaultlocale()[0].split('_')[0] or ''
 
 def sanitize(s):
@@ -66,7 +67,7 @@ def main():
     print('Connected to %s://%s%s' % (scheme, host, path), file=stderr)
 
     # Find the page
-    page = site.pages[args.article_name]
+    page = site.pages[args.article_name.decode(locale_encoding)]
     if not page.exists:
         p.error('Page %s does not exist' % args.article_name)
     fn = sanitize(args.article_name)
