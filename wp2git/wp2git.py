@@ -61,7 +61,7 @@ def main():
         scheme, host, path = 'https', '%s.wikipedia.org' % args.lang, '/w/'
     else:
         scheme, host, path = 'https', 'wikipedia.org', '/w/'
-    site = mwclient.Site((scheme, host), path=path)
+    site = mwclient.Site(host, path=path, scheme=scheme)
     print('Connected to %s://%s%s' % (scheme, host, path), file=stderr)
 
     # Find the page
