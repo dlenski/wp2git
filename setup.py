@@ -1,7 +1,13 @@
-#!/usr/bin/env python
-from __future__ import print_function
+#!/usr/bin/env python3
 import sys, os, re, subprocess as sp
-from distutils.core import setup
+
+try:
+  from setuptools import setup
+except ImportError:
+  from distutils.core import setup
+
+if sys.version_info < (3,):
+    sys.exit("Python 2.x is not supported; Python 3.x is required.")
 
 ########################################
 

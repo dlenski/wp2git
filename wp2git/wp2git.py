@@ -1,11 +1,9 @@
-#!/usr/bin/env python2
-from __future__ import print_function
-
+#!/usr/bin/env python3
 from sys import stderr, stdout, platform
 import argparse
 import mwclient
 import subprocess as sp
-import urlparse
+import urllib.parse as urlparse
 import os, locale, time
 from .version import __version__
 
@@ -67,7 +65,7 @@ def main():
     print('Connected to %s://%s%s' % (scheme, host, path), file=stderr)
 
     # Find the page
-    page = site.pages[args.article_name.decode(locale_encoding)]
+    page = site.pages[args.article_name]
     if not page.exists:
         p.error('Page %s does not exist' % args.article_name)
     fn = sanitize(args.article_name)
@@ -91,14 +89,14 @@ def main():
 
     # Output fast-import data stream to file or git pipe
     with fid:
-        fid.write('reset refs/heads/master\n')
+        fid.write(b'reset refs/heads/master\n')
         for rev in page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|content|tags'):
             id = rev['revid']
-            text = rev.get('*','').encode('utf8')
-            user = rev.get('user','').encode('utf8')
+            text = rev.get('*','')
+            user = rev.get('user','')
             user_ = user.replace(' ','_')
-            comment = rev.get('comment','').encode('utf8') or '<blank>'
-            tags = (['minor'] if 'minor' in rev else []) + [tag.encode('utf8') for tag in rev['tags']]
+            comment = rev.get('comment','') or '<blank>'
+            tags = (['minor'] if 'minor' in rev else []) + rev['tags']
             ts = time.mktime(rev['timestamp'])
 
             if rev.get('userid'):
@@ -107,7 +105,7 @@ def main():
                 committer = '%s <>' % user
 
             print((" >> %sRevision %d by %s at %s: %s" % (('Minor ' if 'minor' in rev else ''), id, rev.get('user',''),
-                time.ctime(ts), rev.get('comment',''))).encode('ascii','xmlcharrefreplace'), file=stderr)
+                time.ctime(ts), comment)), file=stderr)
 
             summary = '{comment}\n\nURL: {scheme}://{host}{path}index.php?oldid={id:d}\nEditor: {scheme}://{host}{path}index.php?title=User:{user_}'.format(
                 comment=comment, scheme=scheme, host=host, path=path, id=id, user_=user_)
@@ -115,12 +113,14 @@ def main():
             if tags:
                 summary += '\nTags: ' + ', '.join(tags)
 
-            fid.write('commit refs/heads/master\n')
-            fid.write('committer %s %d +0000\n' % (committer, ts))
-            fid.write('data %d\n%s\n' % (len(summary), summary))
-            fid.write('M 644 inline %s.mw\n' % fn)
-            fid.write('data %d\n%s\n' % (len(text), text))
-        fid.write('done\n')
+            summary = summary.encode()
+            text = text.encode()
+            fid.write(b'commit refs/heads/master\n')
+            fid.write(b'committer %s %d +0000\n' % (committer.encode(), ts))
+            fid.write(b'data %d\n%s\n' % (len(summary), summary))
+            fid.write(b'M 644 inline %s.mw\n' % fn.encode())
+            fid.write(b'data %d\n%s\n' % (len(text), text))
+        fid.write(b'done\n')
 
     if args.doimport:
         pipe.communicate()
