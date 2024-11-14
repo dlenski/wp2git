@@ -24,20 +24,22 @@ def parse_args():
     p = argparse.ArgumentParser(description='Create a git repository with the history of the specified Wikipedia article.')
     p.add_argument('--version', action='version', version=__version__)
     p.add_argument('article_name')
-    g2 = p.add_argument_group('Output options')
-    g=g2.add_mutually_exclusive_group()
+    g = p.add_argument_group('Output options')
     g.add_argument('-n', '--no-import', dest='doimport', default=True, action='store_false',
                    help="Don't invoke git fast-import; only generate fast-import data stream")
     g.add_argument('-b', '--bare', action='store_true', help="Import to a bare repository (no working tree)")
-    g.add_argument('-g', '--git-refs', action='store_true', help="Replace references to earlier revisions with their Git hashes.")
-    g2.add_argument('-o', '--out', help='Output directory or fast-import stream file')
-    g2 = p.add_argument_group('MediaWiki site selection')
-    g=g2.add_mutually_exclusive_group()
-    g.add_argument('--lang', default=lang, help='Wikipedia language code (default %(default)s)')
-    g.add_argument('--site', help='Alternate MediaWiki site (e.g. https://commons.wikimedia.org[/w/])')
+    g.add_argument('-o', '--out', help='Output directory or fast-import stream file')
+    g.add_argument('-g', '--git-refs', action='store_true', help="Replace references to earlier revisions with their Git hashes")
+    g = p.add_argument_group('MediaWiki site selection')
+    x=g.add_mutually_exclusive_group()
+    x.add_argument('--lang', default=lang, help='Wikipedia language code (default %(default)s)')
+    x.add_argument('--site', help='Alternate MediaWiki site (e.g. https://commons.wikimedia.org[/w/])')
 
     args = p.parse_args()
     if not args.doimport:
+        if args.bare or args.git_refs:
+            p.error('--no-import cannot be combined with --bare or --git-refs')
+
         if args.out is None:
             # http://stackoverflow.com/a/2374507/20789
             if platform == "win32":
