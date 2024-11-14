@@ -30,6 +30,7 @@ def parse_args():
     g.add_argument('-b', '--bare', action='store_true', help="Import to a bare repository (no working tree)")
     g.add_argument('-o', '--out', help='Output directory or fast-import stream file')
     g.add_argument('-g', '--git-refs', action='store_true', help="Replace references to earlier revisions with their Git hashes")
+    g.add_argument('-D', '--denoise', action='store_true', help='Simplify common noisy wikitext in comments')
     g = p.add_argument_group('MediaWiki site selection')
     x=g.add_mutually_exclusive_group()
     x.add_argument('--lang', default=lang, help='Wikipedia language code (default %(default)s)')
@@ -104,16 +105,14 @@ def main():
             text = rev.get('*','')
             user = rev.get('user','')
             user_ = user.replace(' ','_')
-            comment = rev.get('comment','') or '<blank>'
+            comment = rev.get('comment','')
             tags = (['minor'] if 'minor' in rev else []) + rev['tags']
             ts = time.mktime(rev['timestamp'])
 
-            if rev.get('userid'):
-                committer = '%s <%s@%s>' % (user,user_,host)
-            else:
-                committer = '%s <>' % user
+            userlink = f'{scheme}://{host}{path}index.php?title=User:{urlparse.quote(user_)}'
+            committer = f'{user} <>'
 
-            print((" >> %sRevision %d by %s at %s: %s" % (('Minor ' if 'minor' in rev else ''), id, rev.get('user',''),
+            print((" >> %sRevision %d by %s at %s: %s" % (('Minor ' if 'minor' in rev else ''), id, user,
                 time.ctime(ts), comment)), file=stderr)
 
             # TODO: get and use 'parsedcomment' which HTML-ifies the comment?
@@ -130,11 +129,18 @@ def main():
 
                 if args.git_refs:
                     for num in refs:
-                        comment = re.sub(r'\[\[Special\:Diff/%d\s*(?:\|[^]]*)?\]\]' % num, shortgit(id2git[num]), comment, flags=re.IGNORECASE)
+                        comment = re.sub(r'\[\[(?::?%s:)?Special\:Diff/%d\s*(?:\|[^]]*)?\]\]' % (args.lang, num), shortgit(id2git[num]), comment, flags=re.IGNORECASE)
                         comment = re.sub(r'\b%d\b' % num, shortgit(id2git[num]), comment)
 
-            summary = '{comment}\n\nURL: {scheme}://{host}{path}index.php?oldid={id:d}\nEditor: {scheme}://{host}{path}index.php?title=User:{user_}'.format(
-                comment=comment, scheme=scheme, host=host, path=path, id=id, user_=user_)
+            if args.denoise:
+                comment = re.sub(r'\[\[(?::?%s:)?Special\:Contrib(?:ution)?s/([^]|]+)\s*(?:\|[^]]*)?\]\](?:\s* \(\[\[User talk\:[^]]+\]\]\))?' % args.lang, r'\1', comment, flags=re.IGNORECASE)
+                comment = re.sub(r'^\s*/\*\s*([^*]*?)\s*\*/\s*', lambda m: f'Edited section "{m.group(1)}"' if m.group(0)==comment else '', comment)
+                comment = re.sub(r'^\[\[WP:UNDO\|Undid\]\] ', 'Undid ', comment)
+
+            if not comment:
+                comment = '<blank>'
+
+            summary = f'{comment}\n\nURL: {scheme}://{host}{path}index.php?oldid={id:d}\nEditor: {userlink}'
 
             if tags:
                 summary += '\nTags: ' + ', '.join(tags)
