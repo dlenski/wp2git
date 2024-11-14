@@ -96,14 +96,17 @@ def main():
     if args.doimport:
         # Pipe to git fast-import
         sp.check_call(['git', 'init'] + (['--bare'] if args.bare else []), cwd=args.out)
+        with open('HEAD' if args.bare else '.git/HEAD', 'rb') as f:
+            head = f.read().removeprefix(b'ref: ').strip()
         pipe = sp.Popen(['git', 'fast-import', '--quiet', '--done'], stdin=sp.PIPE, stdout=sp.PIPE, cwd=args.out)
         fid = pipe.stdin
     else:
         fid = args.out
+        head = b'refs/heads/master'
 
     # Output fast-import data stream to file or git pipe
     with fid:
-        fid.write(b'reset refs/heads/master\n')
+        fid.write(b'reset %s\n' % head)
         id2git = {}
 
         # Round robin through all the pages' revisions, ordering by timestamp
@@ -167,7 +170,7 @@ def main():
 
             summary = summary.encode()
             text = text.encode()
-            fid.write(b'commit refs/heads/master\n')
+            fid.write(b'commit %s\n' % head)
             fid.write(b'mark :%d\n' % id)
             fid.write(b'committer %s %d +0000\n' % (committer.encode(), ts))
             fid.write(b'data %d\n%s\n' % (len(summary), summary))
@@ -184,7 +187,7 @@ def main():
         if retcode != 0:
             p.error('git fast-import returned %d' % retcode)
         if not args.bare:
-            sp.check_call(['git','checkout'], cwd=out)
+            sp.check_call(['git', 'checkout', head.decode().removeprefix('refs/heads/')], cwd=args.out)
         print(f'Created git repository in {args.out!r}', file=stderr)
 
 if __name__=='__main__':
