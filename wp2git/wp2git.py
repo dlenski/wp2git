@@ -5,6 +5,7 @@ import mwclient
 import subprocess as sp
 import urllib.parse as urlparse
 import os, locale, time
+import re
 from .version import __version__
 
 locale_encoding = locale.getpreferredencoding()
@@ -82,7 +83,7 @@ def main():
         else:
             os.mkdir(out)
             sp.check_call(['git','init'] + (['--bare'] if args.bare else []), cwd=out)
-            pipe = sp.Popen(['git', 'fast-import','--quiet','--done'], stdin=sp.PIPE, cwd=out)
+            pipe = sp.Popen(['git', 'fast-import','--quiet','--done'], stdin=sp.PIPE, stdout=sp.PIPE, cwd=out)
             fid = pipe.stdin
     else:
         fid = args.out
@@ -90,8 +91,10 @@ def main():
     # Output fast-import data stream to file or git pipe
     with fid:
         fid.write(b'reset refs/heads/master\n')
+        id2git = {}
         for rev in page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|content|tags'):
             id = rev['revid']
+            id2git[id] = None
             text = rev.get('*','')
             user = rev.get('user','')
             user_ = user.replace(' ','_')
@@ -107,15 +110,30 @@ def main():
             print((" >> %sRevision %d by %s at %s: %s" % (('Minor ' if 'minor' in rev else ''), id, rev.get('user',''),
                 time.ctime(ts), comment)), file=stderr)
 
+            # TODO: get and use 'parsedcomment' which HTML-ifies the comment?
+            # May make identification of links to revisions, users, etc. much easier
+            refs = set()
+            if args.doimport:
+                for num in map(lambda n: int(n, 10), re.findall(r'\b\d+\b', comment)):
+                    if num in id2git:
+                        if id2git[num] is None:
+                            fid.write(b'get-mark :%d\n' % num)
+                            fid.flush()
+                            id2git[num] = pipe.stdout.readline().strip().decode()
+                        refs.add(num)
+
             summary = '{comment}\n\nURL: {scheme}://{host}{path}index.php?oldid={id:d}\nEditor: {scheme}://{host}{path}index.php?title=User:{user_}'.format(
                 comment=comment, scheme=scheme, host=host, path=path, id=id, user_=user_)
 
             if tags:
                 summary += '\nTags: ' + ', '.join(tags)
+            if refs:
+                summary += '\nReferences: ' + ', '.join('%d (%s)' % (r, id2git[r]) for r in refs)
 
             summary = summary.encode()
             text = text.encode()
             fid.write(b'commit refs/heads/master\n')
+            fid.write(b'mark :%d\n' % id)
             fid.write(b'committer %s %d +0000\n' % (committer.encode(), ts))
             fid.write(b'data %d\n%s\n' % (len(summary), summary))
             fid.write(b'M 644 inline %s.mw\n' % fn.encode())
@@ -123,7 +141,9 @@ def main():
         fid.write(b'done\n')
 
     if args.doimport:
-        pipe.communicate()
+        retcode = pipe.wait()
+        if retcode != 0:
+            p.error('git fast-import returned %d' % retcode)
         if not args.bare:
             sp.check_call(['git','checkout'], cwd=out)
 
