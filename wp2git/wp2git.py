@@ -17,6 +17,9 @@ def sanitize(s):
         s = s.replace(c, '_')
     return s
 
+def shortgit(git):
+    return next(git[:ii] for ii in range(6, len(git)) if not git[:ii].isdigit())
+
 def parse_args():
     p = argparse.ArgumentParser(description='Create a git repository with the history of the specified Wikipedia article.')
     p.add_argument('--version', action='version', version=__version__)
@@ -26,6 +29,7 @@ def parse_args():
     g.add_argument('-n', '--no-import', dest='doimport', default=True, action='store_false',
                    help="Don't invoke git fast-import; only generate fast-import data stream")
     g.add_argument('-b', '--bare', action='store_true', help="Import to a bare repository (no working tree)")
+    g.add_argument('-g', '--git-refs', action='store_true', help="Replace references to earlier revisions with their Git hashes.")
     g2.add_argument('-o', '--out', help='Output directory or fast-import stream file')
     g2 = p.add_argument_group('MediaWiki site selection')
     g=g2.add_mutually_exclusive_group()
@@ -122,12 +126,17 @@ def main():
                             id2git[num] = pipe.stdout.readline().strip().decode()
                         refs.add(num)
 
+                if args.git_refs:
+                    for num in refs:
+                        comment = re.sub(r'\[\[Special\:Diff/%d\s*(?:\|[^]]*)?\]\]' % num, shortgit(id2git[num]), comment, flags=re.IGNORECASE)
+                        comment = re.sub(r'\b%d\b' % num, shortgit(id2git[num]), comment)
+
             summary = '{comment}\n\nURL: {scheme}://{host}{path}index.php?oldid={id:d}\nEditor: {scheme}://{host}{path}index.php?title=User:{user_}'.format(
                 comment=comment, scheme=scheme, host=host, path=path, id=id, user_=user_)
 
             if tags:
                 summary += '\nTags: ' + ', '.join(tags)
-            if refs:
+            if refs and not args.git_refs:
                 summary += '\nReferences: ' + ', '.join('%d (%s)' % (r, id2git[r]) for r in refs)
 
             summary = summary.encode()
