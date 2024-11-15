@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from sys import stderr, stdout, platform
+from sys import stderr, stdout
 from itertools import chain, count
 import argparse
 import mwclient
@@ -9,8 +9,11 @@ import os, locale, time
 import re
 from .version import __version__
 
-locale_encoding = locale.getpreferredencoding()
-lang = locale.getdefaultlocale()[0].split('_')[0] or ''
+lang, enc = locale.getlocale()
+if lang == 'C':
+    lang = None
+elif lang is not None:
+    lang = lang.split('_')[0]
 
 def sanitize(s):
     forbidden = r'?*<>|:\/"'
@@ -49,11 +52,7 @@ def parse_args():
             p.error('--no-import cannot be combined with --bare or --git-refs')
 
         if args.out is None:
-            # http://stackoverflow.com/a/2374507/20789
-            if platform == "win32":
-                import msvcrt
-                msvcrt.setmode(stdout.fileno(), os.O_BINARY)
-            args.out = stdout
+            args.out = stdout.buffer
         else:
             try:
                 args.out = argparse.FileType('wb')(args.out)
@@ -73,11 +72,11 @@ def main():
         elif not path.endswith('/'):
             path += '/'
     elif args.lang is not None:
-        scheme, host, path = 'https', '%s.wikipedia.org' % args.lang, '/w/'
+        scheme, host, path = 'https', f'{args.lang}.wikipedia.org', '/w/'
     else:
         scheme, host, path = 'https', 'wikipedia.org', '/w/'
     site = mwclient.Site(host, path=path, scheme=scheme)
-    print('Connected to %s://%s%s' % (scheme, host, path), file=stderr)
+    print(f'Connected to {scheme}://{host}{path}', file=stderr)
 
     # Find the page(s)
     fns = []
@@ -86,7 +85,7 @@ def main():
     for an in args.article_name:
         page = site.pages[an]
         if not page.exists:
-            p.error('Page %s does not exist' % an)
+            p.error(f'Page {an} does not exist')
         fns.append(sanitize(an))
 
         revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|content|tags'))
@@ -166,7 +165,7 @@ def main():
             if tags:
                 summary += '\nTags: ' + ', '.join(tags)
             if refs and not args.git_refs:
-                summary += '\nReferences: ' + ', '.join('%d (%s)' % (r, id2git[r]) for r in refs)
+                summary += '\nReferences: ' + ', '.join(f'{r} ({id2git[r]})' for r in refs)
 
             summary = summary.encode()
             text = text.encode()
@@ -185,7 +184,7 @@ def main():
     if args.doimport:
         retcode = pipe.wait()
         if retcode != 0:
-            p.error('git fast-import returned %d' % retcode)
+            p.error(f'git fast-import returned {retcode}')
         if not args.bare:
             sp.check_call(['git', 'checkout', head.decode().removeprefix('refs/heads/')], cwd=args.out)
         print(f'Created git repository in {args.out!r}', file=stderr)
