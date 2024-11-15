@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from sys import stderr, stdout, platform
+from itertools import chain, count
 import argparse
 import mwclient
 import subprocess as sp
@@ -21,14 +22,14 @@ def shortgit(git):
     return next(git[:ii] for ii in range(6, len(git)) if not git[:ii].isdigit())
 
 def parse_args():
-    p = argparse.ArgumentParser(description='Create a git repository with the history of the specified Wikipedia article.')
+    p = argparse.ArgumentParser(description='Create a git repository with the history of one or more specified Wikipedia articles.')
     p.add_argument('--version', action='version', version=__version__)
-    p.add_argument('article_name')
+    p.add_argument('article_name', nargs='+')
     g = p.add_argument_group('Output options')
     g.add_argument('-n', '--no-import', dest='doimport', default=True, action='store_false',
                    help="Don't invoke git fast-import; only generate fast-import data stream")
     g.add_argument('-b', '--bare', action='store_true', help="Import to a bare repository (no working tree)")
-    g.add_argument('-o', '--out', help='Output directory or fast-import stream file')
+    g.add_argument('-o', '--out', help='Output directory (default is "wp2git") or fast-import stream file (defaults is stdout)')
     g.add_argument('-g', '--git-refs', action='store_true', help="Replace references to earlier revisions with their Git hashes")
     g.add_argument('-D', '--denoise', action='store_true', help='Simplify common noisy wikitext in comments')
     g = p.add_argument_group('MediaWiki site selection')
@@ -37,14 +38,20 @@ def parse_args():
     x.add_argument('--site', help='Alternate MediaWiki site (e.g. https://commons.wikimedia.org[/w/])')
 
     args = p.parse_args()
-    if not args.doimport:
+    if args.doimport:
+        if args.out is None:
+            args.out = next(f'wp2git{n}' for n in chain(('',), count(2)) if not os.path.exists(f'wp2git{n}'))
+        if os.path.exists(args.out):
+            p.error(f'path {args.out!r} exists')
+        os.mkdir(args.out)
+    else:
         if args.bare or args.git_refs:
             p.error('--no-import cannot be combined with --bare or --git-refs')
 
         if args.out is None:
             # http://stackoverflow.com/a/2374507/20789
             if platform == "win32":
-                import os, msvcrt
+                import msvcrt
                 msvcrt.setmode(stdout.fileno(), os.O_BINARY)
             args.out = stdout
         else:
@@ -72,26 +79,25 @@ def main():
     site = mwclient.Site(host, path=path, scheme=scheme)
     print('Connected to %s://%s%s' % (scheme, host, path), file=stderr)
 
-    # Find the page
-    page = site.pages[args.article_name]
-    if not page.exists:
-        p.error('Page %s does not exist' % args.article_name)
-    fn = sanitize(args.article_name)
+    # Find the page(s)
+    fns = []
+    rev_iters = []
+    next_revs = []
+    for an in args.article_name:
+        page = site.pages[an]
+        if not page.exists:
+            p.error('Page %s does not exist' % an)
+        fns.append(sanitize(an))
+
+        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|content|tags'))
+        rev_iters.append(revit)
+        next_revs.append(next(revit, None))
 
     if args.doimport:
-        # Create output directory and pipe to git
-        if args.out is not None:
-            out = args.out
-        else:
-            out = fn
-
-        if os.path.exists(out):
-            p.error('path %s exists' % out)
-        else:
-            os.mkdir(out)
-            sp.check_call(['git','init'] + (['--bare'] if args.bare else []), cwd=out)
-            pipe = sp.Popen(['git', 'fast-import','--quiet','--done'], stdin=sp.PIPE, stdout=sp.PIPE, cwd=out)
-            fid = pipe.stdin
+        # Pipe to git fast-import
+        sp.check_call(['git', 'init'] + (['--bare'] if args.bare else []), cwd=args.out)
+        pipe = sp.Popen(['git', 'fast-import', '--quiet', '--done'], stdin=sp.PIPE, stdout=sp.PIPE, cwd=args.out)
+        fid = pipe.stdin
     else:
         fid = args.out
 
@@ -99,7 +105,19 @@ def main():
     with fid:
         fid.write(b'reset refs/heads/master\n')
         id2git = {}
-        for rev in page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|content|tags'):
+
+        # Round robin through all the pages' revisions, ordering by timestamp
+        while any(next_revs):
+            # Pick which of the pages' revisions has the lowest timestamp
+            min_ts = (1<<63)
+            ii = -1
+            for ii, rev in enumerate(next_revs):
+                if rev and time.mktime(rev['timestamp']) < min_ts:
+                    min_ii, min_ts = ii, time.mktime(rev['timestamp'])
+            else:
+                rev = next_revs[min_ii]
+                fn = fns[min_ii]
+
             id = rev['revid']
             id2git[id] = None
             text = rev.get('*','')
@@ -112,8 +130,8 @@ def main():
             userlink = f'{scheme}://{host}{path}index.php?title=User:{urlparse.quote(user_)}'
             committer = f'{user} <>'
 
-            print((" >> %sRevision %d by %s at %s: %s" % (('Minor ' if 'minor' in rev else ''), id, user,
-                time.ctime(ts), comment)), file=stderr)
+            print(f"{time.ctime(ts)} >> {'Minor ' if 'minor' in rev else '      '}Revision {id}"
+                  f"{' of ' + args.article_name[min_ii] if len(args.article_name) > 1 else ''} by {user}: {comment}", file=stderr)
 
             # TODO: get and use 'parsedcomment' which HTML-ifies the comment?
             # May make identification of links to revisions, users, etc. much easier
@@ -155,7 +173,11 @@ def main():
             fid.write(b'data %d\n%s\n' % (len(summary), summary))
             fid.write(b'M 644 inline %s.mw\n' % fn.encode())
             fid.write(b'data %d\n%s\n' % (len(text), text))
-        fid.write(b'done\n')
+
+            # Get the next revision for the page we just output
+            next_revs[min_ii] = next(rev_iters[min_ii], None)
+        else:
+            fid.write(b'done\n')
 
     if args.doimport:
         retcode = pipe.wait()
@@ -163,6 +185,7 @@ def main():
             p.error('git fast-import returned %d' % retcode)
         if not args.bare:
             sp.check_call(['git','checkout'], cwd=out)
+        print(f'Created git repository in {args.out!r}', file=stderr)
 
 if __name__=='__main__':
     main()
