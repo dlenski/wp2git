@@ -91,7 +91,7 @@ def main():
             p.error(f'Page {an} does not exist')
         fns.append(sanitize(an))
 
-        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|content|tags'))
+        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|content|tags'))
         rev_iters.append(revit)
         next_revs.append(next(revit, None))
 
@@ -129,14 +129,15 @@ def main():
             user = rev.get('user','')
             user_ = user.replace(' ','_')
             comment = rev.get('comment','')
+            userid = rev['userid']
             tags = (['minor'] if 'minor' in rev else []) + rev['tags']
             ts = time.mktime(rev['timestamp'])
 
-            userlink = f'{scheme}://{host}{path}index.php?title=User:{urlparse.quote(user_)}'
+            userlink = f'{scheme}://{host}{path}index.php?title=' + (f'Special:Redirect/user/{userid}' if userid else f"User:{urlparse.quote(user_)}")
             committer = f'{user} <>'
 
             print(f"{time.ctime(ts)} >> {'Minor ' if 'minor' in rev else '      '}Revision {id}"
-                  f"{' of ' + args.article_name[min_ii] if len(args.article_name) > 1 else ''} by {user}: {comment}", file=stderr)
+                  f"{' of ' + args.article_name[min_ii] if len(args.article_name) > 1 else ''} by {user} {rev.get("userid")}: {comment}", file=stderr)
 
             # TODO: get and use 'parsedcomment' which HTML-ifies the comment?
             # May make identification of links to revisions, users, etc. much easier
