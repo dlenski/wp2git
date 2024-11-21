@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 from sys import stderr, stdout
 from itertools import chain, count
+from pathlib import Path
 import argparse
-import mwclient
 import subprocess as sp
 import urllib.parse as urlparse
 import os, locale, time
 import re
+
+import mwclient
+
 from .version import __version__
 
 lang, enc = locale.getlocale()
@@ -32,7 +35,7 @@ def parse_args():
     g.add_argument('-n', '--no-import', dest='doimport', default=True, action='store_false',
                    help="Don't invoke git fast-import; only generate fast-import data stream")
     g.add_argument('-b', '--bare', action='store_true', help="Import to a bare repository (no working tree)")
-    g.add_argument('-o', '--out', help='Output directory (default is "wp2git") or fast-import stream file (defaults is stdout)')
+    g.add_argument('-o', '--out', type=Path, help='Output directory (default is "wp2git") or fast-import stream file (defaults is stdout)')
     g.add_argument('-g', '--git-refs', action='store_true', help="Replace references to earlier revisions with their Git hashes")
     g.add_argument('-D', '--denoise', action='store_true', help='Simplify common noisy wikitext in comments')
     g = p.add_argument_group('MediaWiki site selection')
@@ -43,10 +46,10 @@ def parse_args():
     args = p.parse_args()
     if args.doimport:
         if args.out is None:
-            args.out = next(f'wp2git{n}' for n in chain(('',), count(2)) if not os.path.exists(f'wp2git{n}'))
-        if os.path.exists(args.out):
-            p.error(f'path {args.out!r} exists')
-        os.mkdir(args.out)
+            args.out = next(pp for n in chain(('',), count(2)) if not (pp := Path(f'wp2git{n}')).exists())
+        if args.out.exists():
+            p.error(f'path {args.out} exists')
+        args.out.mkdir(parents=True)
     else:
         if args.bare or args.git_refs:
             p.error('--no-import cannot be combined with --bare or --git-refs')
@@ -55,8 +58,8 @@ def parse_args():
             args.out = stdout.buffer
         else:
             try:
-                args.out = argparse.FileType('wb')(args.out)
-            except argparse.ArgumentTypeError as e:
+                args.out = args.out.open('xb')
+            except OSError as e:
                 p.error(e.args[0])
 
     return p, args
@@ -95,7 +98,7 @@ def main():
     if args.doimport:
         # Pipe to git fast-import
         sp.check_call(['git', 'init'] + (['--bare'] if args.bare else []), cwd=args.out)
-        with open('HEAD' if args.bare else '.git/HEAD', 'rb') as f:
+        with open(args.out / ('.' if args.bare else '.git') / 'HEAD', 'rb') as f:
             head = f.read().removeprefix(b'ref: ').strip()
         pipe = sp.Popen(['git', 'fast-import', '--quiet', '--done'], stdin=sp.PIPE, stdout=sp.PIPE, cwd=args.out)
         fid = pipe.stdin
@@ -186,8 +189,8 @@ def main():
         if retcode != 0:
             p.error(f'git fast-import returned {retcode}')
         if not args.bare:
-            sp.check_call(['git', 'checkout', head.decode().removeprefix('refs/heads/')], cwd=args.out)
-        print(f'Created git repository in {args.out!r}', file=stderr)
+            sp.check_call(['git', 'checkout', '-q', head.decode().removeprefix('refs/heads/')], cwd=args.out)
+        print(f'Created git repository in {args.out}', file=stderr)
 
 if __name__=='__main__':
     main()
