@@ -134,7 +134,7 @@ def main():
             ts = time.mktime(rev['timestamp'])
 
             userlink = f'{scheme}://{host}{path}index.php?title=' + (f'Special:Redirect/user/{userid}' if userid else f"User:{urlparse.quote(user_)}")
-            committer = f'{user} <>'
+            committer = f"{user.replace('<',' ').replace('>',' ')} <>"   # I don't think Wikipedia allows this, but other Mediawiki sites do
 
             print(f"{time.ctime(ts)} >> {'Minor ' if 'minor' in rev else '      '}Revision {id}"
                   f"{' of ' + args.article_name[min_ii] if len(args.article_name) > 1 else ''} by {user}: {comment}", file=stderr)
