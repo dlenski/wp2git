@@ -91,7 +91,7 @@ def main():
             p.error(f'Page {an} does not exist')
         fns.append(sanitize(an))
 
-        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|content|tags'))
+        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|content|tags'))
         rev_iters.append(revit)
         next_revs.append(next(revit, None))
 
@@ -129,10 +129,11 @@ def main():
             user = rev.get('user','')
             user_ = user.replace(' ','_')
             comment = rev.get('comment','')
+            userid = rev['userid'] or None  # this is zero for anon/IP users
             tags = (['minor'] if 'minor' in rev else []) + rev['tags']
             ts = time.mktime(rev['timestamp'])
 
-            userlink = f'{scheme}://{host}{path}index.php?title=User:{urlparse.quote(user_)}'
+            userlink = f'{scheme}://{host}{path}index.php?title=' + (f'Special:Redirect/user/{userid}' if userid else f"User:{urlparse.quote(user_)}")
             committer = f'{user} <>'
 
             print(f"{time.ctime(ts)} >> {'Minor ' if 'minor' in rev else '      '}Revision {id}"
