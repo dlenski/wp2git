@@ -12,6 +12,9 @@ import mwclient
 
 from .version import __version__
 
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
 lang, enc = locale.getlocale()
 if lang == 'C':
     lang = None
@@ -31,13 +34,14 @@ def parse_args():
     p = argparse.ArgumentParser(description='Create a git repository with the history of one or more specified Wikipedia articles.')
     p.add_argument('--version', action='version', version=__version__)
     p.add_argument('article_name', nargs='+')
-    g = p.add_argument_group('Output options')
+    g = p.add_argument_group('Git output options')
     g.add_argument('-n', '--no-import', dest='doimport', default=True, action='store_false',
                    help="Don't invoke git fast-import; only generate fast-import data stream")
     g.add_argument('-b', '--bare', action='store_true', help="Import to a bare repository (no working tree)")
     g.add_argument('-o', '--out', type=Path, help='Output directory (default is "wp2git") or fast-import stream file (defaults is stdout)')
+    g = p.add_argument_group('Output cleanup')
     g.add_argument('-g', '--git-refs', action='store_true', help="Replace references to earlier revisions with their Git hashes")
-    g.add_argument('-D', '--denoise', action='store_true', help='Simplify common noisy wikitext in comments')
+    g.add_argument('-D', '--denoise', action='store_true', help='Simplify common "noisy" wikitext in comments')
     g = p.add_argument_group('MediaWiki site selection')
     x=g.add_mutually_exclusive_group()
     x.add_argument('--lang', default=lang, help='Wikipedia language code (default %(default)s)')
@@ -48,6 +52,17 @@ def parse_args():
         if args.out is None:
             args.out = next(pp for n in chain(('',), count(2)) if not (pp := Path(f'wp2git{n}')).exists())
         if args.out.exists():
+            # # Try to incrementally build
+            # args.bare = sp.check_output(['git', 'rev-parse', '--is-bare-repository'], cwd=args.out)
+            # with open(args.out / ('.' if args.bare else '.git') / 'HEAD', 'rb') as f:
+            #     head = f.read().removeprefix(b'ref: ').strip()
+            # githash, *cmesg = sp.check_output(['git', 'show', '-s', '--format=%H%n%B', head.decode()], cwd=args.out, text=True).split('\n', 1)
+            # lastrev = None
+            # if cmesg:
+            #     _, *trailers = cmesg[0].rsplit('\n\n', 1)
+            #     if trailers:
+            #         trailers = dict(l.split(': ', 1) for l in trailers[0].splitlines())
+            #         if trailers.get['URL']
             p.error(f'path {args.out} exists')
         args.out.mkdir(parents=True)
     else:
@@ -85,13 +100,14 @@ def main():
     fns = []
     rev_iters = []
     next_revs = []
+    lasttext = [None] * len(args.article_name)
     for an in args.article_name:
         page = site.pages[an]
         if not page.exists:
             p.error(f'Page {an} does not exist')
         fns.append(sanitize(an))
 
-        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|content|tags'))
+        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|tags', max_items=10))
         rev_iters.append(revit)
         next_revs.append(next(revit, None))
 
@@ -125,7 +141,7 @@ def main():
 
             id = rev['revid']
             id2git[id] = None
-            text = rev.get('*','')
+            #text = rev.get('*','')
             user = rev.get('user','')
             user_ = user.replace(' ','_')
             comment = rev.get('comment','')
@@ -133,11 +149,48 @@ def main():
             tags = (['minor'] if 'minor' in rev else []) + rev['tags']
             ts = time.mktime(rev['timestamp'])
 
+            prevtext = lasttext[min_ii]
+            if prevtext is None:
+                text = next(site.pages[args.article_name[min_ii]].revisions(prop='content', startid=id, endid=id)).get('*', '')
+                lasttext[min_ii] = text.split('\n')  # TODO: check if always '\n', never '\r\n'
+            else:
+                res = site.connection.get(f'{scheme}://{host}{path}rest.php/v1/revision/{rev["parentid"]}/compare/{id}')  # hacky
+                res.raise_for_status()
+                for diff in res.json()['diff']:
+                    # https://www.mediawiki.org/wiki/API:REST_API/Reference#Response_schema_3
+                    ty = diff['type']
+                    if ty in (4, 5):
+                        continue   # moved paragraph visual indicators
+                    elif ty == 2:  # delete
+                        # Eeeeesh
+                        tmp = '\n'.join(prevtext)
+                        tmp = tmp[:diff['offset']['from']] + tmp[diff['offset']['from'] + len(diff['text']) + 1:]
+                        prevtext = tmp.split('\n')
+                        continue
+
+                    ln, tx = diff['lineNumber'] - 1, diff['text']
+                    if ty == 0:     # context
+                        assert len(prevtext) > ln, f"Got context for line {ln+1} but have only {len(prevtext)} lines of prevtext:\n{chr(10).join(prevtext)!r}"
+                        assert prevtext[ln] == tx, (
+                            f"Diff context mismatch on line {ln+1}:\n"
+                            f"Have: {prevtext[ln]}\n"
+                            f"Expd: {tx}\n")
+                    elif ty == 1:   # add
+                        prevtext.insert(ln, tx)
+                    elif ty == 2:   # delete
+                        prevtext.remove(ln)
+                    elif ty == 3:   # change
+                        prevtext[ln] = tx
+                    else:
+                        assert False, f"Can't handle diff {diff!r}"
+                lasttext[min_ii] = prevtext
+                text = '\n'.join(prevtext)
+
             userlink = f'{scheme}://{host}{path}index.php?title=' + (f'Special:Redirect/user/{userid}' if userid else f"User:{urlparse.quote(user_)}")
-            committer = f'{user.replace('<',' ').replace('>',' ')} <>'   # I don't think Wikipedia allows this, but other Mediawiki sites do
+            committer = f"{user.replace('<',' ').replace('>',' ')} <>"
 
             print(f"{time.ctime(ts)} >> {'Minor ' if 'minor' in rev else '      '}Revision {id}"
-                  f"{' of ' + args.article_name[min_ii] if len(args.article_name) > 1 else ''} by {user} {rev.get("userid")}: {comment}", file=stderr)
+                  f"{' of ' + args.article_name[min_ii] if len(args.article_name) > 1 else ''} by {user} {rev.get('userid')}: {comment}", file=stderr)
 
             # TODO: get and use 'parsedcomment' which HTML-ifies the comment?
             # May make identification of links to revisions, users, etc. much easier
@@ -156,15 +209,24 @@ def main():
                         comment = re.sub(r'\[\[(?::?%s:)?Special\:Diff/%d\s*(?:\|[^]]*)?\]\]' % (args.lang, num), shortgit(id2git[num]), comment, flags=re.IGNORECASE)
                         comment = re.sub(r'\b%d\b' % num, shortgit(id2git[num]), comment)
 
+            section_frag = ''
+            if m := re.search(r'^\s*/\*\s*(.*?)\s*\*/\s*', comment):
+                section = m.group(1)
+                section_frag = f'#{urlparse.quote(section.replace(" ", "_"))}'
+                if args.denoise:
+                    if m.group(0) == comment:
+                        comment = f'Edited section "{section}"'
+                    else:
+                        comment = comment.replace(m.group(0), '', 1)
+
             if args.denoise:
                 comment = re.sub(r'\[\[(?::?%s:)?Special\:Contrib(?:ution)?s/([^]|]+)\s*(?:\|[^]]*)?\]\](?:\s* \(\[\[User talk\:[^]]+\]\]\))?' % args.lang, r'\1', comment, flags=re.IGNORECASE)
-                comment = re.sub(r'^\s*/\*\s*([^*]*?)\s*\*/\s*', lambda m: f'Edited section "{m.group(1)}"' if m.group(0)==comment else '', comment)
                 comment = re.sub(r'^\[\[WP:UNDO\|Undid\]\] ', 'Undid ', comment)
 
             if not comment:
                 comment = '<blank>'
 
-            summary = f'{comment}\n\nURL: {scheme}://{host}{path}index.php?oldid={id:d}\nEditor: {userlink}'
+            summary = f'{comment}\n\nURL: {scheme}://{host}{path}index.php?oldid={id:d}{section_frag}\nEditor: {userlink}'
 
             if tags:
                 summary += '\nTags: ' + ', '.join(tags)
