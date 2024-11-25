@@ -2,16 +2,21 @@
 from sys import stderr, stdout, version_info
 from itertools import chain, count
 from pathlib import Path
+from tempfile import mkdtemp
 import argparse
 import subprocess as sp
 import urllib.parse as urlparse
 import os, locale, time
 import re
 from datetime import datetime
+from xml.etree import ElementTree
 
 import mwclient
 
 from .version import __version__
+
+#import logging
+#logging.basicConfig(level=logging.DEBUG)
 
 lang, enc = locale.getlocale()
 if lang == 'C':
@@ -45,6 +50,61 @@ def timestamp_num_or_iso(s):
 
 def shortgit(git):
     return next(git[:ii] for ii in range(6, len(git)) if not git[:ii].isdigit())
+
+def wikidiff2udiff(htmldiff):
+    '''The MediaWiki API produces diffs in only:
+    1) A clunky HTML format (https://www.mediawiki.org/wiki/API:Compare#Using_the_HTML_output) designed for visual display.
+       Good: Can be mechanically converted to a unified diff.
+       Bad: Very inefficient with verbose HTML tags, XML entity escapes in the text, and \"-escaping in the JSON wrapper.
+       Disadvantages: It doesn't represent line endings (\r vs \r\n and EOF absence/presence) in the wikitext).
+    2) A newer JSON format (https://www.mediawiki.org/wiki/API:REST_API/Reference#Response_schema_3) that's also
+       designed to be shown visually, and is excruciatingly difficult to convert to a patch-able format.
+       Good: Can distinguish \r vs \r\n
+       Bad: Still can't distinguish EOF newline absence/presence, terribly inconsistent encoding.
+
+    This function converts the clunky HTML format into a standard unified diff, modulo the limitations above.
+    '''
+    xml = ElementTree.fromstring('<x>{}</x>'.format(htmldiff))
+
+    # Hunk line counts (-a,b +c,d)
+    hunk_from_ct = hunk_to_ct = 0
+    hunk_offset = []
+    # Current hunk
+    hunk = ''
+    # Patch
+    patch = ''
+
+    for td in xml.iter('td'):
+        cc = set(td.attrib['class'].split())
+
+        assert len(hunk_offset) == 2 or 'diff-lineno' in cc
+        if 'diff-lineno' in cc:
+            # These come in pairs, with text "Line N:" (but localized!!), and introduce a new hunk
+            hunk_offset.append(int(re.search(r'\d+', td.text).group(0)))
+            if len(hunk_offset) > 2:  # not the first hunk
+                patch += f'@@ -{hunk_offset[0]},{hunk_from_ct} +{hunk_offset[1]},{hunk_to_ct} @@\n{hunk}'
+                hunk_from_ct = hunk_to_ct = 0
+                del hunk_offset[:2]
+                hunk = ''
+        elif 'diff-deletedline' in cc:
+            hunk += '-%s\n' % ''.join(td.itertext())
+            hunk_from_ct += 1
+        elif 'diff-addedline' in cc:
+            hunk += '+%s\n' % ''.join(td.itertext())
+            hunk_to_ct += 1
+        elif 'diff-context' in cc and 'diff-side-deleted' in cc:
+            hunk += ' %s\n' % ''.join(td.itertext())
+            hunk_from_ct += 1
+            hunk_to_ct += 1
+        elif 'diff-marker' in cc or 'diff-empty' in cc or 'diff-context' in cc:
+            pass  # don't care
+        else:
+            raise AssertionError(f"Unexpected {ElementTree.tostring(td)} in\n{ElementTree.tostring(xml).decode()}")
+    else:
+        assert len(hunk_offset) == 2
+        patch += f'@@ -{hunk_offset[0]},{hunk_from_ct} +{hunk_offset[1]},{hunk_to_ct} @@\n{hunk}'
+        return patch
+
 
 def parse_args():
     p = argparse.ArgumentParser(description='Create a git repository with the history of one or more specified Wikipedia articles.')
@@ -108,13 +168,17 @@ def main():
     fns = []
     rev_iters = []
     next_revs = []
+    lasttext = [None] * len(args.article_name)
     for an in args.article_name:
         page = site.pages[an]
         if not page.exists:
             p.error(f'Page {an} does not exist')
         fns.append(sanitize(an))
 
-        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|content|tags',
+        # Fetching diff-from-previous-revision using prop+='|diff', diffto='prev' here is deprecated (see
+        # https://www.mediawiki.org/wiki/API:Revisions#query%2brevisions:rvdiffto) but sometimes still works
+        # and saves us an additional API roundtrip.
+        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|tags|diff', diffto='prev',
                                     start=args.not_before, end=args.not_after))
         rev_iters.append(revit)
         next_revs.append(next(revit, None))
@@ -131,6 +195,8 @@ def main():
         head = b'refs/heads/master'
 
     # Output fast-import data stream to file or git pipe
+    tempd = Path(mkdtemp())
+    print('***********', tempd)
     with fid:
         fid.write(b'reset %s\n' % head)
         id2git = {}
@@ -149,13 +215,47 @@ def main():
 
             id = rev['revid']
             id2git[id] = None
-            text = rev.get('*','')
+            #text = rev.get('*','')
             user = rev.get('user','')
             user_ = user.replace(' ','_')
             comment = rev.get('comment','')
             userid = rev['userid'] or None  # this is zero for anon/IP users
             tags = (['minor'] if 'minor' in rev else []) + rev['tags']
             ts = time.mktime(rev['timestamp'])
+
+            prevtext = lasttext[min_ii]
+            if prevtext is None: # or '*' not in rev['diff']:
+                # This is the first revision of the page in question
+                text = next(site.pages[args.article_name[min_ii]].revisions(prop='content', startid=id, endid=id)).get('*', '')
+                text = '\n'.join(text.splitlines()) + '\n'  # Normalize line endings
+                with open(tempd / f'{fn}_{id:010d}.mw', 'w') as tmp:
+                    tmp.write(text)
+                lasttext[min_ii] = text
+            else:
+                if '*' in rev['diff']:
+                    htmldiff = rev['diff']['*']
+                else:
+                    # As mentioned above, fetching diff-from-previous-revision using the revision API is deprecated,
+                    # and many MediaWiki instances simply don't cache these diffs, so we need to do an extra roundtrip.
+                    htmldiff = site.get('compare', fromrev=rev['parentid'], torev=id)['compare']['*']
+                udiff = wikidiff2udiff(htmldiff)
+                with open(tempd / f'{fn}_{rev["parentid"]:010d}_{id:010d}.diff', 'w') as tmp:
+                    tmp.write(udiff)
+                lasttext[min_ii] = output = sp.check_output(['patch', '-su', '-o', '-', '-i', tmp.name, tempd / f'{fn}_{rev["parentid"]:010d}.mw'], text=True)
+
+                text = next(site.pages[args.article_name[min_ii]].revisions(prop='content', startid=id, endid=id)).get('*', '')
+                text = '\n'.join(text.splitlines()) + '\n'  # Normalize line endings
+                with open(tempd / f'{fn}_{id:010d}.mw', 'w') as tmp:
+                    tmp.write(text)
+
+                # if output != text:
+                if True:
+                    print('HTML diff size %d bytes, text size %d bytes (%d%%)' % (len(htmldiff), len(text), 100*len(htmldiff)//len(text)))
+                else:
+                   open('/tmp/text.mw', 'w').write(text)
+                   open('/tmp/output.mw', 'w').write(output)
+                   sp.call(['git', '--no-pager', 'diff', '--no-index', '/tmp/text.mw', '/tmp/output.mw'])
+                   p.error('mismatch')
 
             userlink = f'{scheme}://{host}{path}index.php?title=' + (f'Special:Redirect/user/{userid}' if userid else f"User:{urlparse.quote(user_)}")
             committer = f"{user.replace('<',' ').replace('>',' ')} <>"   # I don't think Wikipedia allows this, but other Mediawiki sites do
