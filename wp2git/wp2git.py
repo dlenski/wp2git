@@ -149,42 +149,111 @@ def main():
             tags = (['minor'] if 'minor' in rev else []) + rev['tags']
             ts = time.mktime(rev['timestamp'])
 
-            prevtext = lasttext[min_ii]
+            prevtext: bytes = lasttext[min_ii]
             if prevtext is None:
                 text = next(site.pages[args.article_name[min_ii]].revisions(prop='content', startid=id, endid=id)).get('*', '')
-                lasttext[min_ii] = text.split('\n')  # TODO: check if always '\n', never '\r\n'
+                lasttext[min_ii] = text.encode()
             else:
                 res = site.connection.get(f'{scheme}://{host}{path}rest.php/v1/revision/{rev["parentid"]}/compare/{id}')  # hacky
                 res.raise_for_status()
-                for diff in res.json()['diff']:
-                    # https://www.mediawiki.org/wiki/API:REST_API/Reference#Response_schema_3
-                    ty = diff['type']
-                    if ty in (4, 5):
-                        continue   # moved paragraph visual indicators
-                    elif ty == 2:  # delete
-                        # Eeeeesh
-                        tmp = '\n'.join(prevtext)
-                        tmp = tmp[:diff['offset']['from']] + tmp[diff['offset']['from'] + len(diff['text']) + 1:]
-                        prevtext = tmp.split('\n')
-                        continue
 
-                    ln, tx = diff['lineNumber'] - 1, diff['text']
-                    if ty == 0:     # context
-                        assert len(prevtext) > ln, f"Got context for line {ln+1} but have only {len(prevtext)} lines of prevtext:\n{chr(10).join(prevtext)!r}"
-                        assert prevtext[ln] == tx, (
-                            f"Diff context mismatch on line {ln+1}:\n"
-                            f"Have: {prevtext[ln]}\n"
-                            f"Expd: {tx}\n")
-                    elif ty == 1:   # add
-                        prevtext.insert(ln, tx)
-                    elif ty == 2:   # delete
-                        prevtext.remove(ln)
-                    elif ty == 3:   # change
-                        prevtext[ln] = tx
+                output: bytes = b''
+
+                from_pos = 0
+                for diff in res.json()['diff']:
+                    import pprint
+                    pprint.pprint(diff)
+
+                    # https://www.mediawiki.org/wiki/API:REST_API/Reference#Response_schema_3
+                    # The positions in the diff are byte positions, not utf8 character positions, eesh 😒
+                    text = diff['text'].encode()
+                    lt = len(text)
+
+                    ty = diff['type']
+                    if ty in (1, 2, 3):
+                        print(f"****Before type={ty}: len(output)={len(output)}, from_pos={from_pos}")
+
+                    if ty == 0:  # context
+                        # Just check input matches
+                        assert diff['offset']['from'] >= from_pos
+                        assert diff['offset']['from'] + lt <= len(prevtext)
+                        assert diff['offset']['to'] >= len(output)
+                        assert prevtext[diff['offset']['from']:].startswith(text)
+                    elif ty == 1:  # add
+                        # Copy everything from input until output reaches diff['offset']['to'] in length
+                        nn = from_pos + (diff['offset']['to'] - len(output))
+                        assert len(prevtext) >= nn >= from_pos, \
+                            f"{len(prevtext)} >= {nn} >= {from_pos}"
+                        output += prevtext[from_pos: nn]
+                        from_pos = nn
+                        # ... then add new text
+                        output += text + b'\n'
+                    elif ty == 2:  # delete
+                        # Copy everything from input up to diff['offset']['from']
+                        nn = diff['offset']['from']
+                        assert len(prevtext) >= nn >= from_pos, \
+                            f"{len(prevtext)} >= {nn} >= {from_pos}"
+                        output += prevtext[from_pos: nn]
+                        # ... then skip text and following '\n'
+                        assert prevtext[from_pos:].startswith(text), \
+                            f"{prevtext[from_pos:]}.startswith({text!r})"
+                        from_pos += lt
+                        if from_pos != len(prevtext):  # trailing '\n' inconsistency
+                            assert prevtext[from_pos] == 10
+                            from_pos += 1
+                    elif ty == 3:  # change
+                        # Copy everything from input up to diff['offset']['from']
+                        nn = diff['offset']['from']
+                        assert len(prevtext) >= nn >= from_pos, \
+                            f"{len(prevtext)} >= {nn} >= {from_pos}"
+                        output += prevtext[from_pos: nn]
+                        # ... and check that output reaches diff['offset']['to'] in length
+                        if diff['offset']['to'] is not None:
+                            assert len(output) == diff['offset']['to'], \
+                                f"{len(output)} == {diff['offset']['to']}\n{output}"
+                        # ... and add new text, while keeping unchanged text
+                        pos = drop = 0
+                        for r in diff['highlightRanges']:
+                            start = r['start']
+                            end = r['start'] + r['length']
+                            # add "between-range" unchanged text
+                            output += text[pos: start]
+                            pos = end
+                            if r['type'] == 0:         # addition
+                                assert start <= end <= lt
+                                output += text[start: end]
+                                drop += end - start
+                            else:
+                                assert r['type'] == 1  # deletion
+                        else:
+                            output += text[pos:] + b'\n'
+                        # ... and skip unchanged and deleted text in the input
+                        from_pos = nn + lt - drop
+                        if from_pos != len(prevtext):  # trailing '\n' inconsistency
+                            assert prevtext[from_pos] == 10
+                            from_pos += 1
+                    elif ty in (4,5): # moved paragraph
+                        pass
                     else:
                         assert False, f"Can't handle diff {diff!r}"
-                lasttext[min_ii] = prevtext
-                text = '\n'.join(prevtext)
+
+                    if ty in (1, 2, 3):
+                        print(f"****After type={ty}: len(output)={len(output)}, from_pos={from_pos},\noutput={output.decode()!r},\nprevtext[from_pos:]={prevtext[from_pos:].decode()!r}")
+                else:
+                    # Add remaining text
+                    output += prevtext[from_pos:]
+
+                lasttext[min_ii] = output
+                text = next(site.pages[args.article_name[min_ii]].revisions(prop='content', startid=id, endid=id)).get('*', '')
+                if output.decode() not in (text, text+'\n'):
+                    open('/tmp/text.mw', 'w').write(text)
+                    open('/tmp/output.mw', 'wb').write(output)
+                    sp.call(['git', '--no-pager', 'diff', '--no-index', '/tmp/text.mw', '/tmp/output.mw'])
+                    p.error('mismatch')
+                else:
+                    print(f'**************************************************')
+                    print(f'****** {rev["parentid"]} -> {id} diff fixup successful ******')
+                    print(f'**************************************************')
 
             userlink = f'{scheme}://{host}{path}index.php?title=' + (f'Special:Redirect/user/{userid}' if userid else f"User:{urlparse.quote(user_)}")
             committer = f"{user.replace('<',' ').replace('>',' ')} <>"
