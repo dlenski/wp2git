@@ -2,7 +2,6 @@
 from sys import stderr, stdout, version_info
 from itertools import chain, count
 from pathlib import Path
-from tempfile import mkdtemp
 import argparse
 import subprocess as sp
 import urllib.parse as urlparse
@@ -51,7 +50,7 @@ def timestamp_num_or_iso(s):
 def shortgit(git):
     return next(git[:ii] for ii in range(6, len(git)) if not git[:ii].isdigit())
 
-def wikidiff2udiff(htmldiff):
+def wikidiff2hunks(htmldiff):
     '''The MediaWiki API produces diffs in only:
     1) A clunky HTML format (https://www.mediawiki.org/wiki/API:Compare#Using_the_HTML_output) designed for visual display.
        Good: Can be mechanically converted to a unified diff.
@@ -62,7 +61,7 @@ def wikidiff2udiff(htmldiff):
        Good: Can distinguish \r vs \r\n
        Bad: Still can't distinguish EOF newline absence/presence, terribly inconsistent encoding.
 
-    This function converts the clunky HTML format into a standard unified diff, modulo the limitations above.
+    This function takes the clunky HTML format and yields a sequence of diff hunks, modulo the limitations above.
     '''
     xml = ElementTree.fromstring('<x>{}</x>'.format(htmldiff))
 
@@ -70,9 +69,7 @@ def wikidiff2udiff(htmldiff):
     hunk_from_ct = hunk_to_ct = 0
     hunk_offset = []
     # Current hunk
-    hunk = ''
-    # Patch
-    patch = ''
+    hunk = []
 
     for td in xml.iter('td'):
         cc = set(td.attrib['class'].split())
@@ -82,18 +79,18 @@ def wikidiff2udiff(htmldiff):
             # These come in pairs, with text "Line N:" (but localized!!), and introduce a new hunk
             hunk_offset.append(int(re.search(r'\d+', td.text).group(0)))
             if len(hunk_offset) > 2:  # not the first hunk
-                patch += f'@@ -{hunk_offset[0]},{hunk_from_ct} +{hunk_offset[1]},{hunk_to_ct} @@\n{hunk}'
+                yield hunk_offset[0]-1, hunk_from_ct, hunk_offset[1]-1, hunk_to_ct, hunk
                 hunk_from_ct = hunk_to_ct = 0
                 del hunk_offset[:2]
-                hunk = ''
+                hunk = []
         elif 'diff-deletedline' in cc:
-            hunk += '-%s\n' % ''.join(td.itertext())
+            hunk.append('-%s' % ''.join(td.itertext()))
             hunk_from_ct += 1
         elif 'diff-addedline' in cc:
-            hunk += '+%s\n' % ''.join(td.itertext())
+            hunk.append('+%s' % ''.join(td.itertext()))
             hunk_to_ct += 1
         elif 'diff-context' in cc and 'diff-side-deleted' in cc:
-            hunk += ' %s\n' % ''.join(td.itertext())
+            hunk.append(' %s' % ''.join(td.itertext()))
             hunk_from_ct += 1
             hunk_to_ct += 1
         elif 'diff-marker' in cc or 'diff-empty' in cc or 'diff-context' in cc:
@@ -102,8 +99,15 @@ def wikidiff2udiff(htmldiff):
             raise AssertionError(f"Unexpected {ElementTree.tostring(td)} in\n{ElementTree.tostring(xml).decode()}")
     else:
         assert len(hunk_offset) == 2
-        patch += f'@@ -{hunk_offset[0]},{hunk_from_ct} +{hunk_offset[1]},{hunk_to_ct} @@\n{hunk}'
-        return patch
+        yield hunk_offset[0]-1, hunk_from_ct, hunk_offset[1]-1, hunk_to_ct, hunk
+
+
+def wikidiff2udiff(htmldiff):
+    _NL = '\n'
+    return ''.join(
+        f'@@ -{a+1},{b} +{c+1},{d} @@\n{_NL.join(hunk)}\n'
+        for a, b, c, d, hunk in wikidiff2hunks(htmldiff)
+    )
 
 
 def parse_args():
@@ -195,8 +199,6 @@ def main():
         head = b'refs/heads/master'
 
     # Output fast-import data stream to file or git pipe
-    tempd = Path(mkdtemp())
-    print('***********', tempd)
     with fid:
         fid.write(b'reset %s\n' % head)
         id2git = {}
@@ -227,10 +229,7 @@ def main():
             if prevtext is None: # or '*' not in rev['diff']:
                 # This is the first revision of the page in question
                 text = next(site.pages[args.article_name[min_ii]].revisions(prop='content', startid=id, endid=id)).get('*', '')
-                text = '\n'.join(text.splitlines()) + '\n'  # Normalize line endings
-                with open(tempd / f'{fn}_{id:010d}.mw', 'w') as tmp:
-                    tmp.write(text)
-                lasttext[min_ii] = text
+                lasttext[min_ii] = text.splitlines()
             else:
                 if '*' in rev['diff']:
                     htmldiff = rev['diff']['*']
@@ -238,18 +237,30 @@ def main():
                     # As mentioned above, fetching diff-from-previous-revision using the revision API is deprecated,
                     # and many MediaWiki instances simply don't cache these diffs, so we need to do an extra roundtrip.
                     htmldiff = site.get('compare', fromrev=rev['parentid'], torev=id)['compare']['*']
-                udiff = wikidiff2udiff(htmldiff)
-                with open(tempd / f'{fn}_{rev["parentid"]:010d}_{id:010d}.diff', 'w') as tmp:
-                    tmp.write(udiff)
-                lasttext[min_ii] = output = sp.check_output(['patch', '-su', '-o', '-', '-i', tmp.name, tempd / f'{fn}_{rev["parentid"]:010d}.mw'], text=True)
+
+                    # Apply the diff to the previous text
+                    fromline = None
+                    newtext = []
+                    for a, b, c, d, hunk in wikidiff2hunks(htmldiff):
+                        newtext += prevtext[fromline:a]  # copy as-is to the start of this hunk
+                        fromline = a
+                        for l in hunk:
+                            if l[0] != '+':
+                                assert prevtext[fromline] == l[1:], f"Revision {rev['parentid']} -> {id} of {an}: diff mismatch at line {fromline+1}:\nDiff:   {l}\nActual:  {prevtext[fromline]}"
+                                fromline += 1
+                            if l[0] != '-':
+                                newtext.append(l[1:])
+                    else:
+                        newtext += prevtext[fromline:]   # copy rest
+
+                lasttext[min_ii] = newtext
+                output = '\n'.join(newtext)
 
                 text = next(site.pages[args.article_name[min_ii]].revisions(prop='content', startid=id, endid=id)).get('*', '')
-                text = '\n'.join(text.splitlines()) + '\n'  # Normalize line endings
-                with open(tempd / f'{fn}_{id:010d}.mw', 'w') as tmp:
-                    tmp.write(text)
+                text = '\n'.join(text.splitlines())  # Normalize line endings
 
-                # if output != text:
-                if True:
+                if output == text:
+                #if True:
                     print('HTML diff size %d bytes, text size %d bytes (%d%%)' % (len(htmldiff), len(text), 100*len(htmldiff)//len(text)))
                 else:
                    open('/tmp/text.mw', 'w').write(text)
