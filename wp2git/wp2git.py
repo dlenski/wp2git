@@ -156,15 +156,24 @@ def main():
                         comment = re.sub(r'\[\[(?::?%s:)?Special\:Diff/%d\s*(?:\|[^]]*)?\]\]' % (args.lang, num), shortgit(id2git[num]), comment, flags=re.IGNORECASE)
                         comment = re.sub(r'\b%d\b' % num, shortgit(id2git[num]), comment)
 
+            section_frag = ''
+            if m := re.search(r'^\s*/\*\s*(.*?)\s*\*/\s*', comment):
+                section = m.group(1)
+                section_frag = f'#{urlparse.quote(section.replace(" ", "_"))}'
+                if args.denoise:
+                    if m.group(0) == comment:
+                        comment = f'Edited section "{section}"'
+                    else:
+                        comment = comment.replace(m.group(0), '', 1)
+
             if args.denoise:
                 comment = re.sub(r'\[\[(?::?%s:)?Special\:Contrib(?:ution)?s/([^]|]+)\s*(?:\|[^]]*)?\]\](?:\s* \(\[\[User talk\:[^]]+\]\]\))?' % args.lang, r'\1', comment, flags=re.IGNORECASE)
-                comment = re.sub(r'^\s*/\*\s*([^*]*?)\s*\*/\s*', lambda m: f'Edited section "{m.group(1)}"' if m.group(0)==comment else '', comment)
                 comment = re.sub(r'^\[\[WP:UNDO\|Undid\]\] ', 'Undid ', comment)
 
             if not comment:
                 comment = '<blank>'
 
-            summary = f'{comment}\n\nURL: {scheme}://{host}{path}index.php?oldid={id:d}\nEditor: {userlink}'
+            summary = f'{comment}\n\nURL: {scheme}://{host}{path}index.php?oldid={id:d}{section_frag}\nEditor: {userlink}'
 
             if tags:
                 summary += '\nTags: ' + ', '.join(tags)
