@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from sys import stderr, stdout
+from sys import stderr, stdout, version_info
 from itertools import chain, count
 from pathlib import Path
 import argparse
@@ -7,6 +7,7 @@ import subprocess as sp
 import urllib.parse as urlparse
 import os, locale, time
 import re
+from datetime import datetime
 
 import mwclient
 
@@ -23,6 +24,24 @@ def sanitize(s):
     for c in forbidden:
         s = s.replace(c, '_')
     return s
+
+def timestamp_num_or_iso(s):
+    if s == 'now':
+        return s
+    try:
+        return int(s, 10)
+    except ValueError:
+        try:
+             return float(s)
+        except ValueError:
+            try:
+                if version_info < (3, 11) and s.endswith('Z'):
+                    return datetime.fromisoformat(s[:-1] + '+00:00')
+                else:
+                    return datetime.fromisoformat(s)
+            except ValueError:
+                return argparse.ArgumentError(f'Could not parse {s!r} as Unix epoch seconds, ISO8601 timestamp, or "now"')
+
 
 def shortgit(git):
     return next(git[:ii] for ii in range(6, len(git)) if not git[:ii].isdigit())
@@ -42,6 +61,9 @@ def parse_args():
     x=g.add_mutually_exclusive_group()
     x.add_argument('--lang', default=lang, help='Wikipedia language code (default %(default)s)')
     x.add_argument('--site', help='Alternate MediaWiki site (e.g. https://commons.wikimedia.org[/w/])')
+    g = p.add_argument_group('Time range restriction (accepted formats are Unix epoch seconds, ISO8601 timestamps, or "now")')
+    g.add_argument('--not-before', '-B', type=timestamp_num_or_iso)
+    g.add_argument('--not-after', '-A', type=timestamp_num_or_iso)
 
     args = p.parse_args()
     if args.doimport:
@@ -91,7 +113,8 @@ def main():
             p.error(f'Page {an} does not exist')
         fns.append(sanitize(an))
 
-        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|content|tags'))
+        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|content|tags',
+                                    start=args.not_before, end=args.not_after))
         rev_iters.append(revit)
         next_revs.append(next(revit, None))
 
