@@ -98,8 +98,9 @@ def wikidiff2hunks(htmldiff):
         else:
             raise AssertionError(f"Unexpected {ElementTree.tostring(td)} in\n{ElementTree.tostring(xml).decode()}")
     else:
-        assert len(hunk_offset) == 2
-        yield hunk_offset[0]-1, hunk_from_ct, hunk_offset[1]-1, hunk_to_ct, hunk
+        assert len(hunk_offset) in (0, 2)  # zero for a totally empty diff
+        if len(hunk_offset) == 2:
+            yield hunk_offset[0]-1, hunk_from_ct, hunk_offset[1]-1, hunk_to_ct, hunk
 
 
 def wikidiff2udiff(htmldiff):
