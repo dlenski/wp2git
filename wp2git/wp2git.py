@@ -9,7 +9,6 @@ import os, locale, time
 import re
 from datetime import datetime
 from xml.etree import ElementTree
-from difflib import restore
 
 import mwclient
 
@@ -243,7 +242,7 @@ def main():
                 for a, b, c, d, hunk in wikidiff2ndiff(htmldiff):
                     newtext += prevtext[fromline:a]
                     fromline = a + b
-                    newtext += restore((l[0] + ' ' + l[1:] for l in hunk), 2)
+                    newtext += [l[1:] for l in hunk if l[0] != '-']
                 else:
                     newtext += prevtext[fromline:]
 
