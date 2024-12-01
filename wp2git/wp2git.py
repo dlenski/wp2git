@@ -130,6 +130,9 @@ def parse_args():
     g = p.add_argument_group('Time range restriction (accepted formats are Unix epoch seconds, ISO8601 timestamps, or "now")')
     g.add_argument('--not-before', '-B', type=timestamp_num_or_iso)
     g.add_argument('--not-after', '-A', type=timestamp_num_or_iso)
+    g.add_argument('-d', '--diff', action='store_true',
+        help='Fetch diffs instead of complete page content, to speed up traversing the history of large articles with lengthy history. (EXPERIMENTAL)')
+    g.add_argument('--diff-debug', action='count', default=0)
 
     args = p.parse_args()
     if args.doimport:
@@ -180,11 +183,14 @@ def main():
             p.error(f'Page {an} does not exist')
         fns.append(sanitize(an))
 
-        # Fetching diff-from-previous-revision using prop+='|diff', diffto='prev' here is deprecated (see
-        # https://www.mediawiki.org/wiki/API:Revisions#query%2brevisions:rvdiffto) but sometimes still works
-        # and saves us an additional API roundtrip.
-        revit = iter(page.revisions(dir='newer', prop='ids|timestamp|flags|comment|user|userid|tags|diff', diffto='prev',
-                                    start=args.not_before, end=args.not_after))
+        if args.diff:
+            # Fetching diff-from-previous-revision using prop+='|diff', diffto='prev' here is deprecated (see
+            # https://www.mediawiki.org/wiki/API:Revisions#query%2brevisions:rvdiffto) but sometimes still works
+            # and saves us an additional API roundtrip.
+            prop = 'ids|timestamp|flags|comment|user|userid|tags|diff'
+        else:
+            prop = 'ids|timestamp|flags|comment|user|userid|tags|content'
+        revit = iter(page.revisions(dir='newer', prop=prop, diffto='prev', start=args.not_before, end=args.not_after))
         rev_iters.append(revit)
         next_revs.append(next(revit, None))
 
@@ -215,10 +221,11 @@ def main():
             else:
                 rev = next_revs[min_ii]
                 fn = fns[min_ii]
+                an = args.article_name[min_ii]
+                prevtext = lasttext[min_ii]
 
             id = rev['revid']
             id2git[id] = None
-            #text = rev.get('*','')
             user = rev.get('user','')
             user_ = user.replace(' ','_')
             comment = rev.get('comment','')
@@ -226,18 +233,23 @@ def main():
             tags = (['minor'] if 'minor' in rev else []) + rev['tags']
             ts = time.mktime(rev['timestamp'])
 
-            prevtext = lasttext[min_ii]
-            if prevtext is None: # or '*' not in rev['diff']:
-                # This is the first revision of the page in question
-                text = next(site.pages[args.article_name[min_ii]].revisions(prop='content', startid=id, endid=id)).get('*', '')
-                lasttext[min_ii] = text.splitlines()
+            if not args.diff:
+                text = rev.get('*','')
             else:
-                if '*' in rev['diff']:
-                    htmldiff = rev['diff']['*']
+                prevtext = lasttext[min_ii]
+                if prevtext is None:
+                    # This is the first revision of the page in question
+                    res = site.connection.get(f'{scheme}://{host}{path}index.php?action=raw&oldid={id}')
+                    res.raise_for_status()
+                    text = res.text
+                    lasttext[min_ii] = text.splitlines()  # Normalize line endings
                 else:
-                    # As mentioned above, fetching diff-from-previous-revision using the revision API is deprecated,
-                    # and many MediaWiki instances simply don't cache these diffs, so we need to do an extra roundtrip.
-                    htmldiff = site.get('compare', fromrev=rev['parentid'], torev=id)['compare']['*']
+                    if '*' in rev['diff']:
+                        htmldiff = rev['diff']['*']
+                    else:
+                        # As mentioned above, fetching diff-from-previous-revision using the revision API is deprecated,
+                        # and many MediaWiki instances simply don't cache these diffs, so we need to do an extra roundtrip.
+                        htmldiff = site.get('compare', fromrev=rev['parentid'], torev=id, prop='diff')['compare']['*']
 
                     # Apply the diff to the previous text
                     fromline = None
@@ -254,20 +266,23 @@ def main():
                     else:
                         newtext += prevtext[fromline:]   # copy rest
 
-                lasttext[min_ii] = newtext
-                output = '\n'.join(newtext)
+                        lasttext[min_ii] = newtext
+                        text = '\n'.join(newtext)
 
-                text = next(site.pages[args.article_name[min_ii]].revisions(prop='content', startid=id, endid=id)).get('*', '')
-                text = '\n'.join(text.splitlines())  # Normalize line endings
+                        if args.diff_debug > 0:
+                            saved_bytes = len(text)-len(htmldiff)
+                            saved_pct = 100-100*len(htmldiff)//len(text) if len(text) else None
+                            print(f'Saved {saved_bytes} bytes ({saved_pct}%) by fetching HTML diff at revision {rev["parentid"]} -> {id}')
+                        if args.diff_debug > 1:
+                            res = site.connection.get(f'{scheme}://{host}{path}index.php?action=raw&oldid={id}')
+                            res.raise_for_status()
+                            text2 = '\n'.join(res.text.splitlines())  # Normalize line endings
 
-                if output == text:
-                #if True:
-                    print('HTML diff size %d bytes, text size %d bytes (%d%%)' % (len(htmldiff), len(text), 100*len(htmldiff)//len(text)))
-                else:
-                   open('/tmp/text.mw', 'w').write(text)
-                   open('/tmp/output.mw', 'w').write(output)
-                   sp.call(['git', '--no-pager', 'diff', '--no-index', '/tmp/text.mw', '/tmp/output.mw'])
-                   p.error('mismatch')
+                            if text != text2:
+                                open('/tmp/text_diff.mw', 'w').write(text)
+                                open('/tmp/text_raw.mw', 'w').write(output)
+                                sp.call(['git', '--no-pager', 'diff', '--no-index', '/tmp/text_diff.mw', '/tmp/text_raw.mw'])
+                                p.error(f'Diff mismatch of page {an} at revision {rev["parentid"]} -> {id}')
 
             userlink = f'{scheme}://{host}{path}index.php?title=' + (f'Special:Redirect/user/{userid}' if userid else f"User:{urlparse.quote(user_)}")
             committer = f"{user.replace('<',' ').replace('>',' ')} <>"   # I don't think Wikipedia allows this, but other Mediawiki sites do
