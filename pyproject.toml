@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "wp2git"
+version = "2.0"
+description = "Downloads and imports Wikipedia page histories to a git repository"
+authors = ["Daniel Lenski <dlenski@gmail.com>"]
+readme = "README.md"
+license = "GPLv3 or later"
+
+[project.urls]
+Homepage = "https://github.com/dlenski/wp2git"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+mwclient = "^0.11.0"
+
+[tool.poetry.scripts]
+wp2git = 'wp2git.wp2git:main'
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
