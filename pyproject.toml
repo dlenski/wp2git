@@ -1,8 +1,8 @@
-[tool.poetry]
+[project]
 name = "wp2git"
 version = "2.0"
 description = "Downloads and imports Wikipedia page histories to a git repository"
-authors = ["Daniel Lenski <dlenski@gmail.com>"]
+authors = [{name="Daniel Lenski", email="dlenski@gmail.com"}]
 readme = "README.md"
 license = "GPLv3 or later"
 
