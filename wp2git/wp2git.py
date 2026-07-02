@@ -92,11 +92,15 @@ def main():
 
     # Connect to site with mwclient
     if args.site is not None:
-        scheme, host, path = urlparse.urlparse(args.site, scheme='https')[:3]
-        if path=='':
-            path = '/w/'
-        elif not path.endswith('/'):
-            path += '/'
+        if '.' in args.site and '/' not in args.site:
+            # It's just a domain
+            scheme, host, path = 'https', args.site, '/w/'
+        else:
+            scheme, host, path = urlparse.urlparse(args.site, scheme='https')[:3]
+            if path=='':
+                path = '/w/'
+            elif not path.endswith('/'):
+                path += '/'
     elif args.lang is not None:
         scheme, host, path = 'https', f'{args.lang}.wikipedia.org', '/w/'
     else:
