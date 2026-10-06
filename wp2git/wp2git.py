@@ -65,6 +65,8 @@ def parse_args():
     g = p.add_argument_group('Time range restriction (accepted formats are Unix epoch seconds, ISO8601 timestamps, or "now")')
     g.add_argument('--not-before', '-B', type=timestamp_num_or_iso)
     g.add_argument('--not-after', '-A', type=timestamp_num_or_iso)
+    p.add_argument('-U', '--useragent', default='github.com/dlenski/wp2git',
+                   help='User-agent string to send to remote MediaWiki API server (default %(default)r)')
 
     args = p.parse_args()
     if args.doimport:
@@ -105,7 +107,7 @@ def main():
         scheme, host, path = 'https', f'{args.lang}.wikipedia.org', '/w/'
     else:
         scheme, host, path = 'https', 'wikipedia.org', '/w/'
-    site = mwclient.Site(host, path=path, scheme=scheme)
+    site = mwclient.Site(host, path=path, scheme=scheme, clients_useragent=args.useragent)
     print(f'Connected to {scheme}://{host}{path}', file=stderr)
 
     # Find the page(s)
